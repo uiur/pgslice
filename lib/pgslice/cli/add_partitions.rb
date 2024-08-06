@@ -27,7 +27,7 @@ module PgSlice
       queries = []
 
       if needs_comment
-        queries << "COMMENT ON TRIGGER #{quote_ident(trigger_name)} ON #{quote_table(table)} is 'column:#{field},period:#{period},cast:#{cast}';"
+        queries << "COMMENT ON TRIGGER #{quote_ident(trigger_name)} ON #{quote_table(table)} IS 'column:#{field},period:#{period},cast:#{cast}';"
       end
 
       # today = utc date
@@ -96,6 +96,9 @@ CREATE TABLE #{quote_table(partition)}
         partitions.each do |partition|
           day = partition_date(partition, name_format)
 
+          # note: does not support generated columns
+          # could support by listing columns
+          # but this would cause issues with schema changes
           sql = "(NEW.#{quote_ident(field)} >= #{sql_date(day, cast)} AND NEW.#{quote_ident(field)} < #{sql_date(advance_date(day, period, 1), cast)}) THEN
               INSERT INTO #{quote_table(partition)} VALUES (NEW.*);"
 

@@ -3,7 +3,8 @@ module PgSlice
     desc "prep TABLE [COLUMN] [PERIOD]", "Create an intermediate table for partitioning"
     option :partition, type: :boolean, default: true, desc: "Partition the table"
     option :trigger_based, type: :boolean, default: false, desc: "Use trigger-based partitioning"
-    def prep(table, column=nil, period=nil)
+    option :test_version, type: :numeric, hide: true
+    def prep(table, column = nil, period = nil)
       table = create_table(table)
       intermediate_table = table.intermediate_table
       trigger_name = table.trigger_name
@@ -24,23 +25,23 @@ module PgSlice
       queries = []
 
       # version summary
-      # 1. trigger-based
-      # 2. declarative, with indexes and foreign keys on child tables
-      # 3. declarative, with indexes and foreign keys on parent table
-      version =
-        if options[:trigger_based] || server_version_num < 100000
-          1
-        elsif server_version_num < 110000
-          2
-        else
-          3
-        end
+      # 1. trigger-based (pg9)
+      # 2. declarative, with indexes and foreign keys on child tables (pg10)
+      # 3. declarative, with indexes and foreign keys on parent table (pg11+)
+      version = options[:test_version] || (options[:trigger_based] ? 1 : 3)
 
       declarative = version > 1
 
       if declarative && options[:partition]
+        including = ["DEFAULTS", "CONSTRAINTS", "STORAGE", "COMMENTS", "STATISTICS"]
+        if server_version_num >= 120000
+          including << "GENERATED"
+        end
+        if server_version_num >= 140000
+          including << "COMPRESSION"
+        end
         queries << <<-SQL
-CREATE TABLE #{quote_table(intermediate_table)} (LIKE #{quote_table(table)} INCLUDING DEFAULTS INCLUDING CONSTRAINTS INCLUDING STORAGE INCLUDING COMMENTS) PARTITION BY RANGE (#{quote_ident(column)});
+CREATE TABLE #{quote_table(intermediate_table)} (LIKE #{quote_table(table)} #{including.map { |v| "INCLUDING #{v}" }.join(" ")}) PARTITION BY RANGE (#{quote_ident(column)});
         SQL
 
         if version == 3
@@ -57,7 +58,7 @@ CREATE TABLE #{quote_table(intermediate_table)} (LIKE #{quote_table(table)} INCL
         # add comment
         cast = table.column_cast(column)
         queries << <<-SQL
-COMMENT ON TABLE #{quote_table(intermediate_table)} is 'column:#{column},period:#{period},cast:#{cast},version:#{version}';
+COMMENT ON TABLE #{quote_table(intermediate_table)} IS 'column:#{column},period:#{period},cast:#{cast},version:#{version}';
         SQL
       else
         queries << <<-SQL
@@ -87,7 +88,7 @@ CREATE TRIGGER #{quote_ident(trigger_name)}
 
         cast = table.column_cast(column)
         queries << <<-SQL
-COMMENT ON TRIGGER #{quote_ident(trigger_name)} ON #{quote_table(intermediate_table)} is 'column:#{column},period:#{period},cast:#{cast}';
+COMMENT ON TRIGGER #{quote_ident(trigger_name)} ON #{quote_table(intermediate_table)} IS 'column:#{column},period:#{period},cast:#{cast}';
         SQL
       end
 

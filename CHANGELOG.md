@@ -1,3 +1,23 @@
+## 0.6.1 (2023-04-26)
+
+- Fixed `uninitialized constant` error
+
+## 0.6.0 (2023-04-22)
+
+- Added support for generated columns
+- Added compression and extended statistics to `prep`
+- Dropped support for Ruby < 2.7
+- Dropped support for Postgres < 11
+
+## 0.5.0 (2023-01-29)
+
+- Dropped support for Ruby < 2.5
+
+## 0.4.8 (2022-02-28)
+
+- Fixed error with pg 1.3
+- Reduced size of Docker image
+
 ## 0.4.7 (2020-08-14)
 
 - Added `--tablespace` option to `add_partitions`

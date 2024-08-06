@@ -4,7 +4,7 @@ Postgres partitioning as easy as pie. Works great for both new and existing tabl
 
 :tangerine: Battle-tested at [Instacart](https://www.instacart.com/opensource)
 
-[![Build Status](https://travis-ci.org/ankane/pgslice.svg?branch=master)](https://travis-ci.org/ankane/pgslice)
+[![Build Status](https://github.com/ankane/pgslice/actions/workflows/build.yml/badge.svg)](https://github.com/ankane/pgslice/actions)
 
 ## Install
 
@@ -14,7 +14,7 @@ pgslice is a command line tool. To install, run:
 gem install pgslice
 ```
 
-This will give you the `pgslice` command. If installation fails, you may need to install [dependencies](#dependencies).
+This will give you the `pgslice` command. You can also install it with [Homebrew](#homebrew) or [Docker](#docker). If installation fails, you may need to install [dependencies](#dependencies).
 
 ## Steps
 
@@ -32,9 +32,9 @@ This will give you the `pgslice` command. If installation fails, you may need to
   pgslice prep <table> <column> <period>
   ```
 
-  Period can be `day`, `month`, or `year`.
+  The column should be a `timestamp`, `timestamptz`, or `date` column and period can be `day`, `month`, or `year`.
 
-  This creates a partitioned table named `<table>_intermediate`.
+  This creates a partitioned table named `<table>_intermediate` using range partitioning.
 
 4. Add partitions to the intermediate table
 
@@ -50,7 +50,7 @@ This will give you the `pgslice` command. If installation fails, you may need to
   pgslice fill <table>
   ```
 
-  Use the `--batch-size` and `--sleep` options to control the speed.
+  Use the `--batch-size` and `--sleep` options to control the speed (defaults to `10000` and `0` respectively)
 
   To sync data across different databases, check out [pgsync](https://github.com/ankane/pgsync).
 
@@ -92,11 +92,11 @@ pgslice prep visits created_at month
 ```sql
 BEGIN;
 
-CREATE TABLE "public"."visits_intermediate" (LIKE "public"."visits" INCLUDING DEFAULTS INCLUDING CONSTRAINTS INCLUDING STORAGE INCLUDING COMMENTS) PARTITION BY RANGE ("created_at");
+CREATE TABLE "public"."visits_intermediate" (LIKE "public"."visits" INCLUDING DEFAULTS INCLUDING CONSTRAINTS INCLUDING STORAGE INCLUDING COMMENTS INCLUDING STATISTICS INCLUDING GENERATED INCLUDING COMPRESSION) PARTITION BY RANGE ("created_at");
 
 CREATE INDEX ON "public"."visits_intermediate" USING btree ("created_at");
 
-COMMENT ON TABLE "public"."visits_intermediate" is 'column:createdAt,period:day,cast:date,version:3';
+COMMENT ON TABLE "public"."visits_intermediate" is 'column:created_at,period:month,cast:date,version:3';
 
 COMMIT;
 ```
@@ -108,17 +108,17 @@ pgslice add_partitions visits --intermediate --past 1 --future 1
 ```sql
 BEGIN;
 
-CREATE TABLE "public"."visits_201808" PARTITION OF "public"."visits_intermediate" FOR VALUES FROM ('2018-08-01') TO ('2018-09-01');
+CREATE TABLE "public"."visits_202208" PARTITION OF "public"."visits_intermediate" FOR VALUES FROM ('2022-08-01') TO ('2022-09-01');
 
-ALTER TABLE "public"."visits_201808" ADD PRIMARY KEY ("id");
+ALTER TABLE "public"."visits_202208" ADD PRIMARY KEY ("id");
 
-CREATE TABLE "public"."visits_201809" PARTITION OF "public"."visits_intermediate" FOR VALUES FROM ('2018-09-01') TO ('2018-10-01');
+CREATE TABLE "public"."visits_202209" PARTITION OF "public"."visits_intermediate" FOR VALUES FROM ('2022-09-01') TO ('2022-10-01');
 
-ALTER TABLE "public"."visits_201809" ADD PRIMARY KEY ("id");
+ALTER TABLE "public"."visits_202209" ADD PRIMARY KEY ("id");
 
-CREATE TABLE "public"."visits_201810" PARTITION OF "public"."visits_intermediate" FOR VALUES FROM ('2018-10-01') TO ('2018-11-01');
+CREATE TABLE "public"."visits_202210" PARTITION OF "public"."visits_intermediate" FOR VALUES FROM ('2022-10-01') TO ('2022-11-01');
 
-ALTER TABLE "public"."visits_201808" ADD PRIMARY KEY ("id");
+ALTER TABLE "public"."visits_202210" ADD PRIMARY KEY ("id");
 
 COMMIT;
 ```
@@ -131,17 +131,17 @@ pgslice fill visits
 /* 1 of 3 */
 INSERT INTO "public"."visits_intermediate" ("id", "user_id", "ip", "created_at")
     SELECT "id", "user_id", "ip", "created_at" FROM "public"."visits"
-    WHERE "id" > 0 AND "id" <= 10000 AND "created_at" >= '2018-08-01'::date AND "created_at" < '2018-11-01'::date
+    WHERE "id" > 0 AND "id" <= 10000 AND "created_at" >= '2022-08-01'::date AND "created_at" < '2022-11-01'::date
 
 /* 2 of 3 */
 INSERT INTO "public"."visits_intermediate" ("id", "user_id", "ip", "created_at")
     SELECT "id", "user_id", "ip", "created_at" FROM "public"."visits"
-    WHERE "id" > 10000 AND "id" <= 20000 AND "created_at" >= '2018-08-01'::date AND "created_at" < '2018-11-01'::date
+    WHERE "id" > 10000 AND "id" <= 20000 AND "created_at" >= '2022-08-01'::date AND "created_at" < '2022-11-01'::date
 
 /* 3 of 3 */
 INSERT INTO "public"."visits_intermediate" ("id", "user_id", "ip", "created_at")
     SELECT "id", "user_id", "ip", "created_at" FROM "public"."visits"
-    WHERE "id" > 20000 AND "id" <= 30000 AND "created_at" >= '2018-08-01'::date AND "created_at" < '2018-11-01'::date
+    WHERE "id" > 20000 AND "id" <= 30000 AND "created_at" >= '2022-08-01'::date AND "created_at" < '2022-11-01'::date
 ```
 
 ```sh
@@ -149,11 +149,11 @@ pgslice analyze visits
 ```
 
 ```sql
-ANALYZE VERBOSE "public"."visits_201808";
+ANALYZE VERBOSE "public"."visits_202208";
 
-ANALYZE VERBOSE "public"."visits_201809";
+ANALYZE VERBOSE "public"."visits_202209";
 
-ANALYZE VERBOSE "public"."visits_201810";
+ANALYZE VERBOSE "public"."visits_202210";
 
 ANALYZE VERBOSE "public"."visits_intermediate";
 ```
@@ -217,24 +217,19 @@ WHERE
 Back up and drop older partitions each day, month, or year.
 
 ```sh
-pg_dump -c -Fc -t <table>_201809 $PGSLICE_URL > <table>_201809.dump
-psql -c "DROP TABLE <table>_201809" $PGSLICE_URL
+pg_dump -c -Fc -t <table>_202209 $PGSLICE_URL > <table>_202209.dump
+psql -c "DROP TABLE <table>_202209" $PGSLICE_URL
 ```
 
 If you use [Amazon S3](https://aws.amazon.com/s3/) for backups, [s3cmd](https://github.com/s3tools/s3cmd) is a nice tool.
 
 ```sh
-s3cmd put <table>_201809.dump s3://<s3-bucket>/<table>_201809.dump
+s3cmd put <table>_202209.dump s3://<s3-bucket>/<table>_202209.dump
 ```
 
 ## Schema Updates
 
 Once a table is partitioned, make schema updates on the master table only (not partitions). This includes adding, removing, and modifying columns, as well as adding and removing indexes and foreign keys.
-
-A few exceptions are:
-
-- For Postgres 10, make index and foreign key updates on partitions only
-- For Postgres < 10, make index and foreign key updates on the master table and all partitions
 
 ## Additional Commands
 
@@ -272,41 +267,24 @@ SELECT * FROM
 WHERE
     user_id = 123 AND
     -- for performance
-    created_at >= '2018-09-01' AND created_at < '2018-09-02'
+    created_at >= '2022-09-01' AND created_at < '2022-09-02'
 ```
 
-For this to be effective, ensure `constraint_exclusion` is set to `partition` (default value) or `on`.
+For this to be effective, ensure `constraint_exclusion` is set to `partition` (the default value) or `on`.
 
 ```sql
 SHOW constraint_exclusion;
 ```
 
-### Writes
-
-Before Postgres 10, if you use `INSERT` statements with a `RETURNING` clause (as frameworks like Rails do), you’ll no longer receive the id of the newly inserted record(s) back. If you need this, you can either:
-
-1. Insert directly into the partition
-2. Get value before the insert with `SELECT nextval('sequence_name')` (for multiple rows, append `FROM generate_series(1, n)`)
-
 ## Frameworks
 
 ### Rails
 
-For Postgres 10+, specify the primary key for partitioned models to ensure it’s returned.
+Specify the primary key for partitioned models to ensure it’s returned.
 
 ```ruby
 class Visit < ApplicationRecord
   self.primary_key = "id"
-end
-```
-
-Before Postgres 10, preload the value.
-
-```ruby
-class Visit < ApplicationRecord
-  before_create do
-    self.id ||= self.class.connection.select_all("SELECT nextval('#{self.class.sequence_name}')").first["nextval"]
-  end
 end
 ```
 
@@ -324,13 +302,34 @@ pgslice fill <table> --where "id > 1000" # use any conditions
 pgslice swap <table>
 ```
 
-## Declarative Partitioning
+## Triggers
 
-Postgres 10 introduces [declarative partitioning](https://www.postgresql.org/docs/10/static/ddl-partitioning.html#ddl-partitioning-declarative). A major benefit is `INSERT` statements with a `RETURNING` clause work as expected. If you prefer to use trigger-based partitioning instead (not recommended), pass the `--trigger-based` option to the `prep` command.
+Triggers aren’t copied from the original table. You can set up triggers on the intermediate table if needed. Note that Postgres doesn’t support `BEFORE / FOR EACH ROW` triggers on partitioned tables.
 
 ## Data Protection
 
 Always make sure your [connection is secure](https://ankane.org/postgres-sslmode-explained) when connecting to a database over a network you don’t fully trust. Your best option is to connect over SSH or a VPN. Another option is to use `sslmode=verify-full`. If you don’t do this, your database credentials can be compromised.
+
+## Additional Installation Methods
+
+### Homebrew
+
+With Homebrew, you can use:
+
+```sh
+brew install ankane/brew/pgslice
+```
+
+### Docker
+
+Get the [Docker image](https://hub.docker.com/r/ankane/pgslice) with:
+
+```sh
+docker pull ankane/pgslice
+alias pgslice="docker run --rm -e PGSLICE_URL ankane/pgslice"
+```
+
+This will give you the `pgslice` command.
 
 ## Dependencies
 
@@ -339,7 +338,7 @@ If installation fails, your system may be missing Ruby or libpq.
 On Mac, run:
 
 ```sh
-brew install postgresql
+brew install libpq
 ```
 
 On Ubuntu, run:
@@ -363,19 +362,9 @@ gem install specific_install
 gem specific_install https://github.com/ankane/pgslice.git
 ```
 
-## Docker
-
-```sh
-docker build -t pgslice .
-alias pgslice="docker run --rm -e PGSLICE_URL pgslice"
-```
-
-This will give you the `pgslice` command.
-
 ## Reference
 
 - [PostgreSQL Manual](https://www.postgresql.org/docs/current/static/ddl-partitioning.html)
-- [PostgreSQL Wiki](https://wiki.postgresql.org/wiki/Table_partitioning)
 
 ## Related Projects
 
@@ -384,6 +373,10 @@ Also check out:
 - [Dexter](https://github.com/ankane/dexter) - The automatic indexer for Postgres
 - [PgHero](https://github.com/ankane/pghero) - A performance dashboard for Postgres
 - [pgsync](https://github.com/ankane/pgsync) - Sync Postgres data to your local machine
+
+## History
+
+View the [changelog](https://github.com/ankane/pgslice/blob/master/CHANGELOG.md)
 
 ## Contributing
 
@@ -407,8 +400,8 @@ bundle exec rake test
 To test against different versions of Postgres with Docker, use:
 
 ```sh
-docker run -p=8000:5432 postgres:10
+docker run -p=8000:5432 postgres:14
 TZ=Etc/UTC PGSLICE_URL=postgres://postgres@localhost:8000/postgres bundle exec rake
 ```
 
-On Mac, you must use [Docker for Mac](https://www.docker.com/docker-mac) for the port mapping to localhost to work.
+On Mac, you must use [Docker Desktop](https://www.docker.com/products/docker-desktop/) for the port mapping to localhost to work.

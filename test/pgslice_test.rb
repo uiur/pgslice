@@ -18,7 +18,7 @@ class PgSliceTest < Minitest::Test
   end
 
   def test_date
-    assert_period "year", column: "createdAt"
+    assert_period "year", column: "createdOn"
   end
 
   def test_timestamptz
@@ -53,6 +53,10 @@ class PgSliceTest < Minitest::Test
     assert_period "month", trigger_based: true, column: "createdAtTz"
   end
 
+  def test_v2
+    assert_period "month", version: 2
+  end
+
   def test_tablespace
     assert_period "day", tablespace: true
   end
@@ -63,13 +67,20 @@ class PgSliceTest < Minitest::Test
 
   private
 
-  def assert_period(period, column: "createdAt", trigger_based: false, tablespace: false)
-    run_command "prep Posts #{column} #{period} #{"--trigger-based" if trigger_based}"
+  def assert_period(period, column: "createdAt", trigger_based: false, tablespace: false, version: nil)
+    $conn.exec('CREATE STATISTICS my_stats ON "Id", "UserId" FROM "Posts"')
+
+    if server_version_num >= 120000 && !trigger_based
+      $conn.exec('ALTER TABLE "Posts" ADD COLUMN "Gen" INTEGER GENERATED ALWAYS AS ("Id" * 10) STORED')
+    end
+
+    run_command "prep Posts #{column} #{period} #{"--trigger-based" if trigger_based} #{"--test-version #{version}" if version}"
     assert table_exists?("Posts_intermediate")
 
     run_command "add_partitions Posts --intermediate --past 1 --future 1 #{"--tablespace pg_default" if tablespace}"
     now = Time.now.utc
-    time_format = case period
+    time_format =
+      case period
       when "day"
         "%Y%m%d"
       when "month"
@@ -82,7 +93,7 @@ class PgSliceTest < Minitest::Test
     assert_index partition_name
     assert_foreign_key partition_name
 
-    declarative = server_version_num >= 100000 && !trigger_based
+    declarative = !trigger_based
 
     if declarative
       refute_primary_key "Posts_intermediate"
@@ -90,7 +101,7 @@ class PgSliceTest < Minitest::Test
       assert_primary_key "Posts_intermediate"
     end
 
-    if declarative && server_version_num < 110000
+    if declarative && version == 2
       refute_index "Posts_intermediate"
     else
       assert_index "Posts_intermediate"
@@ -117,7 +128,8 @@ class PgSliceTest < Minitest::Test
     assert_equal 10001, count("Posts")
 
     run_command "add_partitions Posts --future 3"
-    days = case period
+    days =
+      case period
       when "day"
         3
       when "month"
@@ -160,6 +172,9 @@ class PgSliceTest < Minitest::Test
 
     run_command "analyze Posts --swapped"
 
+    # pg_stats_ext view available with Postgres 12+
+    assert_statistics "Posts" if server_version_num >= 120000 && !trigger_based
+
     # TODO check sequence ownership
     run_command "unswap Posts"
     assert table_exists?("Posts")
@@ -183,11 +198,11 @@ class PgSliceTest < Minitest::Test
     stdout, stderr = capture_io do
       PgSlice::CLI.start("#{command} --url #{$url}".split(" "))
     end
-    assert_equal "", stderr
     if verbose?
       puts stdout
       puts
     end
+    assert_equal "", stderr
     stdout
   end
 
@@ -256,6 +271,19 @@ class PgSliceTest < Minitest::Test
       WHERE contype = 'f' AND conrelid = '"#{table_name}"'::regclass
     SQL
     assert !result.detect { |row| row["def"] =~ /\AFOREIGN KEY \(.*\) REFERENCES "Users"\("Id"\)\z/ }.nil?, "Missing foreign key on #{table_name}"
+  end
+
+  # extended statistics are built on partitioned tables
+  # https://github.com/postgres/postgres/commit/20b9fa308ebf7d4a26ac53804fce1c30f781d60c
+  # (backported to Postgres 10)
+  def assert_statistics(table_name)
+    result = $conn.exec <<~SQL
+      SELECT n_distinct
+      FROM pg_stats_ext
+      WHERE tablename = '#{table_name}'
+    SQL
+    assert result.any?, "Missing extended statistics on #{table_name}"
+    assert_equal '{"1, 2": 10002}', result.first["n_distinct"]
   end
 
   def server_version_num
