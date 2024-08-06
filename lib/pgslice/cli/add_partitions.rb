@@ -5,6 +5,7 @@ module PgSlice
     option :past, type: :numeric, default: 0, desc: "Number of past partitions to add"
     option :future, type: :numeric, default: 0, desc: "Number of future partitions to add"
     option :tablespace, type: :string, default: "", desc: "Tablespace to use"
+    option :lock_timeout, default: "5s", desc: "Lock timeout"
     def add_partitions(table)
       original_table = create_table(table)
       table = options[:intermediate] ? original_table.intermediate_table : original_table
@@ -130,7 +131,10 @@ CREATE OR REPLACE FUNCTION #{quote_ident(trigger_name)}()
         end
       end
 
-      run_queries(queries) if queries.any?
+      if queries.any?
+        queries.unshift("SET LOCAL lock_timeout = #{escape_literal(options[:lock_timeout])};")
+        run_queries(queries)
+      end
     end
   end
 end
